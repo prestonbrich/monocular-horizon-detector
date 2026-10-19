@@ -1,377 +1,238 @@
-  MONOCULAR HORIZON-BASED ORIENTATION ESTIMATION FOR SURFACE VESSELS
-================================================================================
+# Monocular Horizon-Based Orientation Estimation for Surface Vessels
 
-1. OBJECTIVE
---------------------------------------------------------------------------------
-
-This project estimates the roll and pitch of a camera mounted on a surface
-vessel using only the waterline visible in a single static image. From these
-angles it computes a velocity direction offset: the unit vector along which
-the vessel's direction of travel appears to deviate, given its attitude,
-assuming an initially straight heading. The estimates are evaluated against
-ground truth derived from the semantic segmentation masks of the MaSTr1325
-dataset.
-
-The project aims to determine how reliably a camera alone can provide attitude
-information for an autonomous surface vessel (ASV).
-
-
-2. DATASET
---------------------------------------------------------------------------------
-
-MaSTr1325 (Marine Semantic Segmentation Training Dataset), obtained from the
-MODD repository maintained by B. Bovcon (github.com/bborja).
-
-  Reference: B. Bovcon, J. Muhovic, J. Pers, M. Kristan, "The MaSTr1325
-  dataset for training deep USV obstacle detection models," IEEE/RSJ IROS,
-  2019.
-
-  - 1325 RGB images captured from a USV, resized to 512 x 384 pixels
-    (MaSTr1325_images_512x384/).
-  - 1325 per-pixel label masks (MaSTr1325_masks_512x384/) using the labels:
-
-        0  Obstacles and environment (land, vessels, structures)
-        1  Water
-        2  Sky
-        4  Ignore region / unknown category
+Estimates the roll and pitch of a camera mounted on a surface vessel from the waterline visible in a **single static image**, and evaluates the estimates against ground truth derived from the MaSTr1325 segmentation masks.
 
-  Most of the images are coastal scenes. In 958 of the 1325 masks, land or
-  obstacles separate the sky from the water across most of the frame, so
-  there is too little visible sea-sky horizon to measure (fewer than 64
-  image columns).
+**Headline result:** on frames that pass the confidence test (665 of 1,325), the median error is **0.78° in roll and 0.83° in pitch**. Half of all frames are rejected, and the camera alone is not sufficient for reliable orientation, which is why the conclusion recommends fusing it with an IMU.
 
+## AI assistance
 
-3. ASSUMPTIONS
---------------------------------------------------------------------------------
+This project was built in a short working session (about 2.5 hours) with **Claude Code**, an AI coding assistant. The AI wrote much of the code and helped with iteration. I set the objective, chose the dataset and the evaluation against segmentation-mask ground truth, ran the experiments, and reviewed the results and the design decisions documented in Section 6. Several early design choices were tested against the data and rejected, and those negative results are kept in this README.
 
-The following parameters model a representative ASV camera installation. They
-are assumed values, not the calibrated parameters of the camera that captured
-the dataset.
+The camera parameters used here are assumed, not calibrated, and IMU fusion is proposed but not implemented. Both are noted again below.
 
-  Camera height above water: 8 ft (2.44 m)
-  
-  Vertical field of view: 61 degrees
-  
-  Principal point: image center (256, 192)
-  
-  Lens model: ideal pinhole (no distortion)
-  
-  Earth radius: 6,371 km (no atmospheric refraction)
-  
-  Initial heading: straight ahead, level
+## 1. Objective
 
-The detector and the ground truth are converted to pitch with the same
-assumed parameters. Pitch errors are therefore internally consistent, but
-absolute pitch values would change with the true camera calibration.
+The project estimates camera roll and pitch from the waterline, then computes a velocity direction offset (the unit vector along which the vessel's direction of travel appears to deviate, given its attitude, assuming an initially straight heading). It aims to determine how reliably a camera alone can provide attitude information for an autonomous surface vessel (ASV).
 
+## 2. Dataset
 
-4. REPOSITORY STRUCTURE
---------------------------------------------------------------------------------
+MaSTr1325 (Marine Semantic Segmentation Training Dataset), from the MODD repository maintained by B. Bovcon ([github.com/bborja](https://github.com/bborja)).
 
-  image_extraction.py   detect_horizon(): horizon detection, roll, pitch and
-                        confidence. horizon_offset_pitch(): converts a line
-                        to a vertical offset and pitch angle.
-  calculations.py       Velocity_Vector(): velocity direction offset.
-                        Accuracy_Check(): ground-truth comparison.
-  results.py            write_results(): Excel report generation.
-  main.py               Runs the pipeline over the full dataset.
-  horizon_results.xlsx  Output report (generated by main.py).
+Reference: B. Bovcon, J. Muhovic, J. Pers, M. Kristan, "The MaSTr1325 dataset for training deep USV obstacle detection models," IEEE/RSJ IROS, 2019.
 
-Requirements: Python 3, numpy, opencv-python, scikit-learn, openpyxl.
+- 1,325 RGB images captured from a USV, resized to 512 x 384 (`MaSTr1325_images_512x384/`).
+- 1,325 per-pixel label masks (`MaSTr1325_masks_512x384/`).
 
-To run:   python main.py
+| Label | Meaning |
+|---|---|
+| 0 | Obstacles and environment (land, vessels, structures) |
+| 1 | Water |
+| 2 | Sky |
+| 4 | Ignore region / unknown |
 
+Most images are coastal scenes. In 958 of the 1,325 masks, land or obstacles separate the sky from the water across most of the frame, so there is too little visible sea-sky horizon to measure (fewer than 64 image columns).
 
-5. METHOD
---------------------------------------------------------------------------------
+**The dataset is not included in this repository.** Download it from the MODD repository and place the two folders next to the code.
 
-5.1 Pipeline Overview
+## 3. Assumptions
 
-  1. Detect the waterline using grid-based vertical intensity gradients.
-  2. Fit a line to the detected edge points with RANSAC regression.
-  3. Assign a confidence score from the RANSAC inlier fraction.
-  4. Derive camera roll from the line slope and camera pitch from the line's
-     vertical offset.
-  5. For frames that pass the confidence threshold, compute the velocity
-     direction offset from roll and pitch.
-  6. Compare roll, pitch and offset against ground truth from the
-     segmentation mask.
-  7. Write per-frame results and summary statistics to horizon_results.xlsx.
+These model a representative ASV camera installation. They are assumed values, not the calibrated parameters of the camera that captured the dataset.
 
-5.2 Waterline Detection (Grid-Based Intensity Gradients)
+| Parameter | Value |
+|---|---|
+| Camera height above water | 8 ft (2.44 m) |
+| Vertical field of view | 61° |
+| Principal point | image center (256, 192) |
+| Lens model | ideal pinhole (no distortion) |
+| Earth radius | 6,371 km (no atmospheric refraction) |
+| Initial heading | straight ahead, level |
 
-  - The image is converted to greyscale and smoothed with an 11 x 11 Gaussian
-    kernel to suppress wave texture and sensor noise.
-  - A vertical Sobel operator (5 x 5 kernel) gives the vertical intensity
-    gradient. Its absolute value is used, so the method does not depend on
-    whether the sky is brighter or darker than the water.
-  - The top and bottom 8 rows are zeroed to remove artefacts from Sobel
-    border padding.
-  - The image is divided into 32 vertical strips (16 px wide), and each strip
-    into 8 px tall cells. The mean gradient of each cell is computed.
-  - In each strip, the strongest cell is found first. The selected cell is
-    the lowest cell within 48 px below it whose gradient is at least 35% of
-    the strongest (see Section 6, D8).
-  - The edge row is then refined to single-pixel precision within the
-    selected cell and its neighbours. Each strip contributes one point.
+The detector and the ground truth are converted to pitch with the same assumed parameters, so pitch errors are internally consistent, but absolute pitch values would change with the true camera calibration.
 
-5.3 Line Fitting and Confidence
+## 4. Repository structure
 
-  A RANSAC regressor (residual threshold 15 px) fits the line
-  y = m*x + b to the 32 strip points and rejects strips locked onto boats,
-  wakes, glare or other clutter.
+| File | Contents |
+|---|---|
+| `image_extraction.py` | `detect_horizon()`: horizon detection, roll, pitch and confidence. `horizon_offset_pitch()`: converts a line to a vertical offset and pitch angle. |
+| `calculations.py` | `Velocity_Vector()`: velocity direction offset. `Accuracy_Check()`: ground-truth comparison. |
+| `results.py` | `write_results()`: Excel report generation. |
+| `main.py` | Runs the pipeline over the full dataset. |
+| `horizon_results.xlsx` | Output report generated by `main.py`. |
 
-  The confidence score is the fraction of strips that are RANSAC inliers.
-  Frames with a confidence below 0.75 (fewer than 24 of 32 strips agreeing)
-  are rejected.
+**Requirements:** Python 3, numpy, opencv-python, scikit-learn, openpyxl.
 
-5.4 Roll
+**To run:**
 
-  Roll is the angle of the fitted line in the image plane:
+```
+pip install -r requirements.txt
+python main.py
+```
 
-      roll = arctan(m)
+## 5. Method
 
-  The image y axis points downward, so a positive roll means the right side
-  of the horizon appears lower in the frame.
+### 5.1 Pipeline overview
 
-5.5 Vertical Offset and Pitch
+1. Detect the waterline using grid-based vertical intensity gradients.
+2. Fit a line to the detected edge points with RANSAC regression.
+3. Assign a confidence score from the RANSAC inlier fraction.
+4. Derive camera roll from the line slope and camera pitch from the line's vertical offset.
+5. For frames that pass the confidence threshold, compute the velocity direction offset from roll and pitch.
+6. Compare roll, pitch and offset against ground truth from the segmentation mask.
+7. Write per-frame results and summary statistics to `horizon_results.xlsx`.
 
-  Under the pinhole model, the focal length in pixels is:
+### 5.2 Waterline detection
 
-      f = (H / 2) / tan(VFOV / 2)            (H = image height)
-
-  The signed perpendicular distance d from the principal point (cx, cy) to
-  the horizon line is measured, so that roll does not distort the result:
+- The image is converted to greyscale and smoothed with an 11 x 11 Gaussian kernel.
+- A vertical Sobel operator (5 x 5) gives the vertical intensity gradient. Its absolute value is used, so the method does not depend on whether the sky is brighter or darker than the water.
+- The top and bottom 8 rows are zeroed to remove Sobel border artefacts.
+- The image is divided into 32 vertical strips (16 px wide), and each strip into 8 px tall cells. The mean gradient of each cell is computed.
+- In each strip, the strongest cell is found first. The selected cell is the lowest cell within 48 px below it whose gradient is at least 35% of the strongest (see D8).
+- The edge row is refined to single-pixel precision. Each strip contributes one point.
 
-      d = (m*cx + b - cy) / sqrt(1 + m^2)    (positive = line below centre)
-
-  Seen from height h, the visible horizon lies below the true horizontal by
-  the dip angle:
-
-      dip = arccos(R / (R + h))
-
-  At h = 8 ft, the dip is 0.050 degrees, or about 0.36 px at this
-  resolution.
-
-  The outputs are:
-
-      offset = d - f * tan(dip)              (px from the zero-pitch position)
-      pitch  = arctan(d / f) - dip           (positive = camera tilted up)
-
-5.6 Velocity Direction Offset
-
-  For frames that pass the confidence test, the attitude is converted to a
-  unit direction vector (Z-up convention):
-
-      vx = cos(pitch)
-      vy = sin(roll) * sin(pitch)
-      vz = cos(roll) * sin(pitch)
-
-  This vector describes direction only, not speed.
-
-5.7 Ground Truth (Accuracy_Check)
-
-  - For each image column, the reference edge point is taken at the top of
-    the water region. It is the midpoint between the first water pixel
-    (label 1) and the nearest labelled sky or obstacle pixel above it, which
-    bridges any thin "unknown" (label 4) band.
-  - A RANSAC fit with a 3 px residual threshold rejects columns where a
-    nearby vessel or obstacle hides the waterline. A least-squares line is
-    then fitted to the inliers.
-  - At least 64 agreeing columns are required.
-  - The reference line is converted to roll, offset and pitch by the same
-    function as the detector (horizon_offset_pitch), so both sides are
-    measured identically.
-
-
-6. DESIGN DECISIONS
---------------------------------------------------------------------------------
-
-The design changed over the course of development. Each decision below was
-tested against the dataset. Errors are absolute errors relative to the
-ground truth.
-
-D1. Correcting the initial implementation.
-    The first prototype never stored its per-column edge points, so the
-    regression stage received an empty array. It also referenced an input
-    image that did not exist. Both defects were corrected before any
-    evaluation.
-
-D2. Grid strips instead of per-column maxima.
-    The prototype took the gradient maximum of every pixel column (512
-    points). Averaging the gradient over 16 px strips and 8 px cells gives
-    the same accuracy (median line error 4.6 px against 4.8 px) with 16x
-    fewer points. Averaging also makes each point less sensitive to isolated
-    noise.
-
-D3. Single candidate per strip.
-    Keeping the three strongest edges per strip and letting RANSAC choose
-    among them was tested. It reduced accuracy (median error 16.4 px against
-    4.6 px), because clutter edges often formed consistent false lines, and
-    was rejected.
-
-D4. Angular error metric.
-    The application requires orientation, so accuracy is reported as roll
-    and pitch error in degrees rather than line position in pixels alone.
-
-D5. No gradient-orientation filter.
-    Discarding pixels whose gradient was not near-vertical (to reject masts
-    and hull sides) was expected to help but increased the median roll
-    error from 0.64 to 0.84 degrees. It was not adopted.
-
-D6. RANSAC inlier fraction as confidence.
-    The inlier fraction directly measures how many independent strips agree
-    on a single line. A threshold of 0.75 was selected as the best balance
-    between frames retained and gross errors (>5 degrees) passed.
-
-D7. Ground-truth definition.
-    The ground truth was first restricted to the direct sky/water boundary.
-    Only 367 of 1325 masks contained enough of that boundary, and in those
-    images it often spanned only a fraction of the frame. Because the
-    waterline against land is also horizontal, the ground truth was
-    redefined as the top edge of the water region, whatever lies above it.
-    All 1325 frames can then be evaluated.
-
-D8. Targeting the waterline rather than the skyline.
-    With the redefined ground truth, the original detector showed a
-    systematic pitch bias of -4.8 degrees (about 28 px). On coastal scenes,
-    the strongest gradient is usually the land/sky skyline, not the
-    water/land waterline below it. The skyline has a similar slope, so roll
-    is unaffected, but it is the wrong height for pitch. The skyline is also
-    a poor pitch reference physically: terrain can rise several degrees
-    above the horizontal, while a waterline 1 km away lies only about
-    0.14 degrees below it.
-
-    The detector was therefore changed to select the lowest strong edge
-    within a bounded window below the strongest edge. The parameters
-    (edge_frac = 0.35, search_below_px = 48) were tuned on one third of the
-    dataset. They were validated on the remaining 883 images:
-
-                                   Strongest edge    Lowest strong edge
-      Roll error, median               1.91 deg          1.31 deg
-      Pitch error, median              4.92 deg          1.02 deg
-      Pitch bias (signed median)      -4.79 deg         -0.84 deg
-      Frames passing confidence           68 %              51 %
-      Roll error, passed frames        1.52 deg          0.76 deg
-      Pitch error, passed frames       4.42 deg          0.83 deg
-
-    The window is bounded because an unbounded search reached foreground
-    wave edges and degraded the worst-case errors.
-
-D9. Shared geometry function.
-    Offset and pitch are computed by a single function
-    (horizon_offset_pitch) used by both the detector and the ground-truth
-    check, so that differences in implementation cannot appear as errors.
-
-D10. Rejected frames are reported, not discarded.
-    Frames that fail the confidence test are still evaluated against the
-    ground truth. This shows how effectively the confidence score separates
-    good estimates from bad ones.
-
-
-7. RESULTS
---------------------------------------------------------------------------------
-
-Full dataset, 1325 frames (from horizon_results.xlsx):
-
-  Confidence test (threshold 0.75)
-    Frames passed: 665  (50.2 %)
-    Frames failed: 660  (49.8 %)
-    Frames without usable ground truth: 0
-
-  Absolute error vs ground truth     Mean      Median    90th percentile
-  ---------------------------------------------------------------------
-  All frames (n = 1325)
-    Roll  (deg)                      3.20      1.40      8.87
-    Pitch (deg)                      2.56      1.01      6.98
-    Offset (px)                     14.79      5.81     40.22
-  Passed frames only (n = 665)
-    Roll  (deg)                      1.26      0.78      2.56
-    Pitch (deg)                      1.19      0.83      2.25
-    Offset (px)                      6.83      4.77     12.87
+### 5.3 Line fitting and confidence
+
+A RANSAC regressor (residual threshold 15 px) fits `y = m*x + b` to the 32 strip points and rejects strips locked onto boats, wakes, glare or other clutter. Confidence is the fraction of strips that are RANSAC inliers. Frames below 0.75 (fewer than 24 of 32 strips agreeing) are rejected.
+
+### 5.4 Roll
+
+```
+roll = arctan(m)
+```
+
+The image y axis points downward, so a positive roll means the right side of the horizon appears lower in the frame.
+
+### 5.5 Vertical offset and pitch
+
+Focal length in pixels, from the vertical field of view:
+
+```
+f = (H / 2) / tan(VFOV / 2)            (H = image height)
+```
+
+Signed perpendicular distance from the principal point (cx, cy) to the horizon line, so that roll does not distort the result:
+
+```
+d = (m*cx + b - cy) / sqrt(1 + m^2)    (positive = line below centre)
+```
+
+Seen from height h, the visible horizon lies below the true horizontal by the dip angle:
+
+```
+dip = arccos(R / (R + h))
+```
+
+At h = 8 ft, the dip is 0.050°, or about 0.36 px at this resolution. Outputs:
+
+```
+offset = d - f * tan(dip)              (px from the zero-pitch position)
+pitch  = arctan(d / f) - dip           (positive = camera tilted up)
+```
+
+### 5.6 Velocity direction offset
+
+For frames that pass the confidence test, the attitude is converted to a unit direction vector (Z-up convention):
+
+```
+vx = cos(pitch)
+vy = sin(roll) * sin(pitch)
+vz = cos(roll) * sin(pitch)
+```
+
+This vector describes direction only, not speed.
+
+### 5.7 Ground truth (`Accuracy_Check`)
+
+- For each image column, the reference edge point is the top of the water region: the midpoint between the first water pixel (label 1) and the nearest labelled sky or obstacle pixel above it, which bridges any thin "unknown" (label 4) band.
+- A RANSAC fit (3 px residual threshold) rejects columns where a nearby vessel or obstacle hides the waterline. A least-squares line is then fitted to the inliers.
+- At least 64 agreeing columns are required.
+- The reference line is converted to roll, offset and pitch by the same function as the detector (`horizon_offset_pitch`), so both sides are measured identically.
+
+## 6. Design decisions
+
+The design changed over the course of development. Each decision below was tested against the dataset. Errors are absolute errors relative to the ground truth.
+
+- **D1. Correcting the initial implementation.** The first prototype never stored its per-column edge points, so the regression stage received an empty array, and it referenced an input image that did not exist. Both defects were corrected before any evaluation.
+- **D2. Grid strips instead of per-column maxima.** The prototype took the gradient maximum of every pixel column (512 points). Averaging over 16 px strips and 8 px cells gives the same accuracy (median line error 4.6 px against 4.8 px) with 16x fewer points, and is less sensitive to isolated noise.
+- **D3. Single candidate per strip.** Keeping the three strongest edges per strip and letting RANSAC choose reduced accuracy (median error 16.4 px against 4.6 px), because clutter edges often formed consistent false lines. Rejected.
+- **D4. Angular error metric.** The application requires orientation, so accuracy is reported as roll and pitch error in degrees rather than line position in pixels alone.
+- **D5. No gradient-orientation filter.** Discarding pixels whose gradient was not near-vertical was expected to help but increased the median roll error from 0.64° to 0.84°. Not adopted.
+- **D6. RANSAC inlier fraction as confidence.** The inlier fraction measures how many independent strips agree on one line. A threshold of 0.75 was the best balance between frames retained and gross errors (>5°) passed.
+- **D7. Ground-truth definition.** Restricting ground truth to the direct sky/water boundary left only 367 of 1,325 masks usable. Because the waterline against land is also horizontal, ground truth was redefined as the top edge of the water region, whatever lies above it, so all 1,325 frames can be evaluated.
+- **D8. Targeting the waterline rather than the skyline.** With the redefined ground truth, the original detector showed a systematic pitch bias of -4.8° (about 28 px). On coastal scenes the strongest gradient is usually the land/sky skyline, not the water/land waterline below it. The skyline has a similar slope, so roll is unaffected, but it is the wrong height for pitch. The detector was changed to select the lowest strong edge within a bounded window below the strongest edge. Parameters (`edge_frac = 0.35`, `search_below_px = 48`) were tuned on one third of the dataset and validated on the remaining 883 images:
+
+| Metric | Strongest edge | Lowest strong edge |
+|---|---|---|
+| Roll error, median | 1.91° | 1.31° |
+| Pitch error, median | 4.92° | 1.02° |
+| Pitch bias (signed median) | -4.79° | -0.84° |
+| Frames passing confidence | 68% | 51% |
+| Roll error, passed frames | 1.52° | 0.76° |
+| Pitch error, passed frames | 4.42° | 0.83° |
+
+The window is bounded because an unbounded search reached foreground wave edges and degraded the worst-case errors.
+
+- **D9. Shared geometry function.** Offset and pitch are computed by a single function used by both the detector and the ground-truth check, so differences in implementation cannot appear as errors.
+- **D10. Rejected frames are reported, not discarded.** Frames that fail the confidence test are still evaluated against ground truth, which shows how well the confidence score separates good estimates from bad ones.
+
+## 7. Results
+
+Full dataset, 1,325 frames (from `horizon_results.xlsx`).
+
+| Confidence test (threshold 0.75) | Count |
+|---|---|
+| Frames passed | 665 (50.2%) |
+| Frames failed | 660 (49.8%) |
+| Frames without usable ground truth | 0 |
+
+**Absolute error vs ground truth**
+
+| Group | Metric | Mean | Median | 90th percentile |
+|---|---|---|---|---|
+| All frames (n = 1,325) | Roll (°) | 3.20 | 1.40 | 8.87 |
+| | Pitch (°) | 2.56 | 1.01 | 6.98 |
+| | Offset (px) | 14.79 | 5.81 | 40.22 |
+| Passed frames only (n = 665) | Roll (°) | 1.26 | 0.78 | 2.56 |
+| | Pitch (°) | 1.19 | 0.83 | 2.25 |
+| | Offset (px) | 6.83 | 4.77 | 12.87 |
 
 Observations:
 
-  - The confidence gate works as intended. On accepted frames, the 90th
-    percentile roll error falls from 8.87 to 2.56 degrees, and the pitch
-    error from 6.98 to 2.25 degrees.
-  - Half of all frames are rejected. Rejections are concentrated in
-    cluttered coastal scenes, near-field vessels, strong wake and sun
-    glare.
-  - Confidence does not guarantee accuracy. Frame 0001 scores 0.91 but has
-    roll and pitch errors of about 5.7 and 5.9 degrees, because a
-    consistent but incorrect edge (such as a coastline that genuinely
-    slopes) satisfies RANSAC as well as the true waterline does.
-  - A residual pitch bias of about -0.8 degrees remains. This is consistent
-    with the detector sometimes locking onto edges slightly above the
-    waterline.
+- The confidence gate works as intended. On accepted frames, the 90th percentile roll error falls from 8.87° to 2.56°, and pitch error from 6.98° to 2.25°.
+- Half of all frames are rejected, concentrated in cluttered coastal scenes, near-field vessels, strong wake and sun glare.
+- Confidence does not guarantee accuracy. Frame 0001 scores 0.91 but has roll and pitch errors of about 5.7° and 5.9°, because a consistent but incorrect edge (such as a coastline that genuinely slopes) satisfies RANSAC as well as the true waterline does.
+- A residual pitch bias of about -0.8° remains, consistent with the detector sometimes locking onto edges slightly above the waterline.
 
+## 8. Discussion: implications for autonomous surface vessels
 
-8. DISCUSSION: IMPLICATIONS FOR AUTONOMOUS SURFACE VESSELS
---------------------------------------------------------------------------------
+An ASV uses attitude estimates for camera stabilisation, georeferencing of detected obstacles, range estimation and control.
 
-An ASV uses attitude estimates for camera stabilisation, georeferencing of
-detected obstacles, range estimation and control. The results above have
-the following practical consequences.
+- **Availability.** About 50% of frames are rejected, and failures cluster in harbours, coastlines and traffic, the situations where reliable perception matters most.
+- **Range estimation sensitivity.** A monocular ASV commonly estimates range from an object's angle below the horizon. At a camera height of 2.44 m, an object 100 m away appears 1.40° below the horizon. A pitch error of +/-1° (the median error even on accepted frames) changes the estimated range to between 58 m and about 350 m, which is not adequate for collision avoidance.
+- **Undetected errors.** Some high-confidence frames still contain errors of several degrees, so a system that trusts the vision estimate cannot detect these failures from the image alone.
+- **Dynamics.** These results come from independent still images. Wave-induced motion, processing latency, motion blur and rolling-shutter distortion would add further error that this evaluation does not capture.
+- **Environmental limits.** The dataset covers daytime coastal conditions. Fog, rain, night, heavy seas and a horizon hidden by land remove the visual reference entirely.
 
-Availability. About 50% of frames are rejected, and failures cluster in
-complex scenes such as harbours, coastlines and traffic. Those are the
-situations where reliable perception matters most. A vision-only system
-would have its longest gaps in attitude data exactly when the vessel is
-manoeuvring near hazards.
+## 9. Conclusion
 
-Range estimation sensitivity. A monocular ASV commonly estimates the range
-to an object on the water from the object's angle below the horizon. At a
-camera height of 2.44 m, an object 100 m away appears 1.40 degrees below
-the horizon. A pitch error of +/-1 degree, the median error even on
-accepted frames, changes the estimated range to between 58 m and 352 m.
-Range estimates of that quality are not adequate for collision avoidance.
+Grid-based gradient detection with RANSAC fitting can recover camera attitude from a single image. When the waterline is clearly visible, accuracy is under 1° (median roll error 0.78° and pitch error 0.83° on accepted frames). However, the camera alone is not sufficient for reliable orientation on an ASV:
 
-Undetected errors. Some frames with high confidence still contain errors of
-several degrees, as frame 0001 shows. A control or navigation system that
-trusts the vision estimate cannot detect these failures from the image
-alone.
+- Half of all frames yield no usable estimate.
+- The confidence score cannot flag every erroneous estimate.
+- Errors of 1 to 2.5° on accepted frames are large enough to distort monocular range estimates.
+- The visual reference disappears entirely in poor visibility.
 
-Dynamics. These results come from independent still images. On a real
-vessel, wave-induced roll and pitch change continuously and quickly. Image
-processing latency, motion blur and rolling-shutter distortion would add
-further error that this evaluation does not capture.
+An inertial measurement unit (IMU) complements the camera:
 
-Environmental limits. The dataset covers daytime coastal conditions. Fog,
-rain, night operation, heavy sea states and a horizon hidden by land
-remove the visual reference entirely.
+- A gyroscope provides high-rate angular rates that remain available when vision fails, but it drifts.
+- An accelerometer provides a gravity reference, but vessel motion corrupts it.
+- The horizon detector provides a drift-free absolute reference, but it is intermittent and occasionally wrong.
 
+Fusing these sources (for example with a complementary filter or an extended Kalman filter) combines the strengths of each. The IMU carries the estimate between frames, accepted vision measurements correct gyroscope drift, and the RANSAC confidence can set the measurement weight. Innovation gating would catch high-confidence errors that vision cannot detect alone. **IMU fusion is proposed here but not implemented.**
 
-9. CONCLUSION
---------------------------------------------------------------------------------
+## 10. Future work
 
-Grid-based gradient detection with RANSAC fitting can recover camera attitude
-from a single image. When the waterline is clearly visible, accuracy is under
-1 degree (median roll error 0.78 degrees and pitch error 0.83 degrees on
-accepted frames). However, the camera alone is not sufficient to provide
-reliable orientation for an autonomous surface vessel:
-
-  - Half of all frames yield no usable estimate.
-  - The confidence score cannot flag every erroneous estimate.
-  - Errors of 1 to 2.5 degrees on accepted frames are large enough to
-    seriously distort monocular range estimates.
-  - The visual reference disappears entirely in poor visibility.
-
-An inertial measurement unit (IMU) complements the camera directly:
-
-  - A gyroscope provides high-rate, low-latency angular rates that remain
-    available when vision fails, but it drifts over time.
-  - An accelerometer provides a gravity reference, but vessel motion
-    corrupts it.
-  - The horizon detector provides a drift-free absolute reference, but it is
-    intermittent and occasionally wrong.
-
-Fusing these sources, for example with a complementary filter or an
-extended Kalman filter, combines the strengths of each. The IMU carries the
-estimate between frames and through rejected frames. Accepted vision
-measurements correct gyroscope drift. The RANSAC confidence score can set
-the measurement weight. Innovation gating, which rejects vision updates that
-disagree strongly with the IMU prediction, would catch the high-confidence
-errors that vision cannot detect on its own. Sensor fusion is therefore
-expected to give substantially more accurate and more available orientation
-than the camera alone.
+- Calibrate the camera (focal length, principal point, lens distortion) instead of assuming a 61° field of view.
+- Evaluate on video sequences with synchronised IMU ground truth, such as the MODD sequences, rather than independent stills.
+- Implement an IMU and vision extended Kalman filter, using detector confidence for measurement covariance, and measure the resulting accuracy and availability.
+- Add colour and texture cues (for example saturation or local variance) to separate water from land more reliably than intensity gradients alone.
+- Use temporal consistency (a search window around the previous frame's horizon) to reduce false detections.
