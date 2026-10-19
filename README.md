@@ -6,7 +6,7 @@ Estimates the roll and pitch of a camera mounted on a surface vessel from the wa
 
 ## AI assistance
 
-This project was built in a short working session (about 2.5 hours) with **Claude Code**, an AI coding assistant. The AI wrote much of the code and helped with iteration. I set the objective, chose the dataset and the evaluation against segmentation-mask ground truth, ran the experiments, and reviewed the results and the design decisions documented in Section 6. Several early design choices were tested against the data and rejected, and those negative results are kept in this README.
+This project was built in a short working session (about 3 hours) with **Claude Code**, an AI coding assistant. The AI wrote much of the code and helped with iteration. I set the objective, chose the dataset and the evaluation against segmentation-mask ground truth, ran the experiments, and reviewed the results and the design decisions documented in Section 6. Several early design choices were tested against the data and rejected, and those negative results are kept in this README.
 
 The camera parameters used here are assumed, not calibrated, and IMU fusion is proposed but not implemented. Both are noted again below.
 
