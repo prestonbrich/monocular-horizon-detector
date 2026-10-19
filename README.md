@@ -48,12 +48,17 @@ The following parameters model a representative ASV camera installation. They
 are assumed values, not the calibrated parameters of the camera that captured
 the dataset.
 
-  Camera height above water ......... 8 ft (2.44 m)
-  Vertical field of view ............ 61 degrees
-  Principal point ................... image centre (256, 192)
-  Lens model ........................ ideal pinhole (no distortion)
-  Earth radius ...................... 6,371 km (no atmospheric refraction)
-  Initial heading ................... straight ahead, level
+  Camera height above water: 8 ft (2.44 m)
+  
+  Vertical field of view: 61 degrees
+  
+  Principal point: image center (256, 192)
+  
+  Lens model: ideal pinhole (no distortion)
+  
+  Earth radius: 6,371 km (no atmospheric refraction)
+  
+  Initial heading: straight ahead, level
 
 The detector and the ground truth are converted to pitch with the same
 assumed parameters. Pitch errors are therefore internally consistent, but
@@ -270,9 +275,9 @@ D10. Rejected frames are reported, not discarded.
 Full dataset, 1325 frames (from horizon_results.xlsx):
 
   Confidence test (threshold 0.75)
-    Frames passed .......................... 665  (50.2 %)
-    Frames failed .......................... 660  (49.8 %)
-    Frames without usable ground truth ..... 0
+    Frames passed: 665  (50.2 %)
+    Frames failed: 660  (49.8 %)
+    Frames without usable ground truth: 0
 
   Absolute error vs ground truth     Mean      Median    90th percentile
   ---------------------------------------------------------------------
